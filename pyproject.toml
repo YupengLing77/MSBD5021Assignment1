@@ -1,0 +1,11 @@
+[project]
+name = "asset-alloc"
+version = "0.1.0"
+description = "MSBD5021 Assignment 1: Multi-Asset Allocation with REINFORCE"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.0",
+    "torch>=2.0",
+    "matplotlib>=3.9",
+]

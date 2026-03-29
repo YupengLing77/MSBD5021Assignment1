@@ -1,0 +1,30 @@
+{
+  "means": [
+    0.15,
+    0.05,
+    0.08,
+    0.2
+  ],
+  "variances": [
+    0.04,
+    0.09,
+    0.01,
+    0.16
+  ],
+  "r": 0.07,
+  "a": 5.0,
+  "init_wealth": 1.0,
+  "init_proportions": [
+    0.1,
+    0.1,
+    0.6,
+    0.1,
+    0.1
+  ],
+  "max_adjustment": 0.1,
+  "n_risky": 4,
+  "T": 4,
+  "num_episodes": 50000,
+  "batch_size": 32,
+  "print_every": 4000
+}
