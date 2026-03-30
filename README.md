@@ -258,10 +258,148 @@ The program prints:
 4. **Training figure** — saved as a PNG file, showing both the smoothed utility curve and the mean sampled policy sigma for each batch update
 
 
-## Case Study: Learned Policy Sigma
+## Case Study: Ablation Study on Sigma Strategies and Environment Settings
 
-As a case study, we use `configs/n4_T9.json`. The training curve is shown below:
+We conduct a systematic ablation study across **4 environment configurations** (`n3_T3`, `n3_T9`, `n4_T3`, `n4_T9`) and **3 sigma strategies** with multiple parameter settings — **7 runs per config, 28 runs in total** — to compare the effect of sigma type, sigma value, and problem difficulty on training convergence and final policy quality.
 
-![Training curve: n=4, T=9](figs/curve_n4_T9.png)
+Each figure contains two panels:
+- **Upper panel**: smoothed CARA utility $U(W_T) = -\frac{1}{a}e^{-a W_T}$ over episodes (higher / less negative is better).
+- **Lower panel**: mean sampled policy sigma per batch update, revealing how exploration evolves.
 
-The lower panel of the figure shows the mean policy sigma ($\sigma$) during training. Initially, sigma is large, encouraging exploration. As training progresses, sigma automatically decreases, shifting the policy from exploration to exploitation and eventually converging to a better solution. This demonstrates the adaptivity and practical advantage of the learn strategy.
+From an RL perspective, sigma is the direct control knob for the **exploration-exploitation trade-off** in REINFORCE. The policy samples actions from a Gaussian distribution $a \sim \mathcal{N}(\mu, \sigma^2)$:
+- A **larger sigma** spreads probability mass farther away from the mean action, so the agent explores more aggressively.
+- A **smaller sigma** concentrates samples near the mean action, so the agent exploits its current best guess more consistently.
+- Therefore, the utility curve and the sigma curve should be read together: when sigma remains large, optimization keeps searching broadly but suffers higher variance; when sigma shrinks, the policy commits to a narrower set of actions and training becomes more stable.
+
+---
+
+### 1. Sigma Strategy Comparison (横向对比: n=4, T=9)
+
+We use `configs/n4_T9.json` as the primary benchmark — the most challenging setting (4 risky assets, 9 time periods, risk aversion $a=5$, 60% initial weight in a suboptimal asset).
+
+#### 1.1 Fixed Sigma
+
+With a fixed constant sigma, the exploration level never changes throughout training.
+
+| sigma | Figure |
+|-------|--------|
+| 0.10  | ![](figs/curve_n4_T9_fixed_s0.10.png) |
+| 0.08  | ![](figs/curve_n4_T9_fixed_s0.08.png) |
+| 0.03  | ![](figs/curve_n4_T9_fixed_s0.03.png) |
+
+**Observations:**
+
+- All three fixed sigma values ultimately converge to a similar terminal utility level (~$-1\times10^{-4}$), but with markedly different training dynamics.
+- **sigma = 0.10**: This is the most exploration-heavy fixed policy. The sigma panel shows a perfectly flat line at 0.10, meaning the agent keeps injecting large action noise even late in training. The result is persistent utility oscillation: the policy keeps exploring when it should already be exploiting.
+- **sigma = 0.08**: A more balanced explore-exploit trade-off. Exploration is still strong enough to search the action space, but exploitation becomes more visible because the sampled actions remain closer to the learned mean. The curve stabilizes around episode 15,000.
+- **sigma = 0.03**: This is the most exploitation-heavy fixed policy. Since sampled actions stay close to the current mean action, policy-gradient variance is lower and convergence is faster. The downside is weaker early exploration: if the initial mean policy were poor, this setting would be more likely to commit too early.
+
+**RL interpretation**: Fixed sigma uses a **static exploration budget**. This is easy to implement, but fundamentally mismatched to learning dynamics: early training typically needs more exploration, while late training benefits from more exploitation. A constant sigma cannot respond to that shift.
+
+---
+
+#### 1.2 Manual Decay Sigma
+
+Manual decay linearly interpolates sigma from an initial value down to `min_sigma = 0.01`, giving the agent more exploration early and enforcing exploitation later.
+
+| policy_sigma (init → 0.01) | Figure |
+|---------------------------|--------|
+| 0.10 → 0.01 | ![](figs/curve_n4_T9_manual_s0.10_min0.01.png) |
+| 0.08 → 0.01 | ![](figs/curve_n4_T9_manual_s0.08_min0.01.png) |
+| 0.03 → 0.01 | ![](figs/curve_n4_T9_manual_s0.03_min0.01.png) |
+
+**Observations:**
+
+- **policy_sigma = 0.10**: The initial sigma equals `max_adjustment`, so the policy begins in an almost maximally exploratory regime. This produces extremely noisy early actions and a much worse initial utility scale (down to ~$-0.015$). But the same aggressive exploration helps the agent search a broad portion of the feasible portfolio-adjustment space before sigma shrinks and exploitation takes over.
+- **policy_sigma = 0.08**: This schedule still starts in an exploratory regime, but not as violently. The linear decay from 0.08 to 0.01 yields a more controlled transition from search to commitment. The utility curve improves more gradually, reflecting a smoother handoff from exploration to exploitation.
+- **policy_sigma = 0.03**: This schedule is close to exploitation from the outset. Because the decay range is small, the policy behaves similarly to a low-noise fixed policy: stable, low-variance, and efficient once the direction is correct, but less capable of broad early search.
+
+**RL interpretation**: Manual decay hard-codes the standard RL heuristic of **explore early, exploit late**. This is better aligned with policy optimization than fixed sigma, but it assumes that learning progress is synchronized with episode count. In practice, the agent may need more exploration in some states and less in others, which a purely time-based schedule cannot express.
+
+---
+
+#### 1.3 Learn Sigma (Final Algorithm)
+
+With the learn strategy, the policy network outputs a state-dependent sigma from a learnable head, bounded within $[\sigma_{\min}, \sigma_{\max}] = [0.01, 0.20]$ via sigmoid mapping.
+
+| Config | Figure |
+|--------|--------|
+| n4_T9, learn | ![](figs/curve_n4_T9_learn_s0.08_min0.01_max0.20.png) |
+
+**Observations:**
+
+- The sigma panel is not a straight line — it decreases gradually and data-adaptively from ~0.081 to ~0.074. The decrease is smooth and continuous, shaped by the gradient signal, not a manual schedule.
+- Compared to manual decay, the sigma decrease is slower and less steep: the network retains moderate exploration longer, which correlates with a smoother and more stable utility curve. In RL terms, it avoids switching too early into a purely exploitative regime.
+- The final utility is comparable to the best fixed/manual configurations but achieved with no hyperparameter tuning of the sigma schedule — the network decides when to reduce exploration.
+- The sigma head acts as an auxiliary output that implicitly encodes the agent's confidence in its current policy. States or training phases with greater uncertainty can preserve more exploration, while more confident regions move closer to exploitation.
+
+**RL interpretation**: Learn sigma implements **adaptive exploration** rather than fixed exploration or scheduled exploration. That is the closest match to the underlying control problem: the agent explores when uncertainty is still useful and exploits when the policy has become reliable. This is why the training curve is typically the most stable among the three strategies.
+
+---
+
+### 2. Cross-Strategy Summary (n=4, T=9)
+
+Seen through the RL lens, the three strategies correspond to three different ways of allocating exploration:
+- **fixed**: a constant exploration budget, regardless of training stage;
+- **manual**: a pre-committed exploration schedule based only on time;
+- **learn**: an adaptive exploration policy shaped by the optimization signal itself.
+
+| Strategy | Init Sigma | Final Sigma | Convergence Speed | Training Stability | Typical Final Utility |
+|----------|-----------|-------------|-------------------|-------------------|----------------------|
+| fixed s=0.10 | 0.10 (flat) | 0.10 (flat) | Slow (~30k) | High noise throughout | ~$-1.0\times10^{-4}$ |
+| fixed s=0.08 | 0.08 (flat) | 0.08 (flat) | Medium (~20k) | Moderate | ~$-8\times10^{-5}$ |
+| fixed s=0.03 | 0.03 (flat) | 0.03 (flat) | Fast (~10k) | Low noise | ~$-9\times10^{-5}$ |
+| manual s=0.10 | 0.10 | 0.01 | Fast (~5k) | Volatile early | ~near 0 (diff scale) |
+| manual s=0.08 | 0.08 | 0.01 | Medium (~20k) | Moderate | ~$-8\times10^{-5}$ |
+| manual s=0.03 | 0.03 | 0.01 | Fast (~10k) | Low | ~$-1.0\times10^{-4}$ |
+| **learn** | **~0.081** | **~0.074** | **Medium (~20k)** | **Best** | **~$-8\times10^{-5}$** |
+
+---
+
+### 3. Environment Setting Comparison (纵向对比: n and T)
+
+We compare the 4 learn-sigma runs across the four environment configurations.
+
+| Config | Figure |
+|--------|--------|
+| n=3, T=3 | ![](figs/curve_n3_T3_learn_s0.08_min0.01_max0.20.png) |
+| n=3, T=9 | ![](figs/curve_n3_T9_learn_s0.08_min0.01_max0.20.png) |
+| n=4, T=3 | ![](figs/curve_n4_T3_learn_s0.08_min0.01_max0.20.png) |
+| n=4, T=9 | ![](figs/curve_n4_T9_learn_s0.08_min0.01_max0.20.png) |
+
+#### 3.1 Effect of Time Horizon T
+
+- **T=3 configs** (n3_T3, n4_T3): Terminal utility converges to approximately $-7\times10^{-4}$ to $-8\times10^{-4}$ — meaningfully more negative than T=9. With only 3 rebalancing periods, the agent has limited opportunity to correct the suboptimal initial allocation (60% in a poor asset). The utility curve remains noisier at convergence.
+- **T=9 configs** (n3_T9, n4_T9): Terminal utility converges to approximately $-1\times10^{-4}$ — roughly **7–8× less negative** than T=3. With 9 rebalancing steps and a 10% max adjustment per step, the agent can progressively migrate the portfolio toward the optimal allocation, accumulating wealth over time.
+
+**RL interpretation**: A longer horizon does not merely provide more rewards at the end; it also makes exploration more valuable. Under the 10% rebalancing constraint, a single action cannot fix a poor portfolio. Exploration must discover a *sequence* of useful reallocations, and exploitation must then repeat that sequence reliably. This sequential improvement is much easier to realize when $T=9$ than when $T=3$.
+
+#### 3.2 Effect of Asset Count n
+
+- **n=3 vs n=4** (same T): The terminal utility levels are similar in scale. The n=4 setting adds a fourth risky asset with $\mu=0.08 \approx r$ and $\sigma^2=0.01$ (cash-like), providing an intermediate safe haven between full cash and the highest-return assets. This slightly changes the effective search space but does not substantially alter the converged utility.
+- The **sigma dynamics** of learn mode differ slightly: the n=3 learn curves show sigma converging to ~0.063–0.066, while n=4 shows convergence to ~0.065–0.074. The additional asset dimension slightly increases the effective action complexity, and the network reflects this by maintaining a marginally higher exploration level.
+- Training is measurably **more volatile for n=4** (especially at T=3), as shown by the utility curve having wider fluctuations — more assets increase the policy gradient variance.
+
+**RL interpretation**: Increasing $n$ enlarges the continuous action space and makes exploration more expensive. The agent must search over more reallocation directions, so premature exploitation becomes riskier and sustained exploration becomes more valuable. The slightly higher learned sigma under $n=4$ is consistent with this effect.
+
+#### 3.3 Combined Environmental Summary
+
+| Config | Approx. Converged Utility | Convergence Pattern | Final Sigma (learn) |
+|--------|--------------------------|---------------------|---------------------|
+| n3_T3 | ~$-8\times10^{-4}$ | Noisy, moderate speed | ~0.066 |
+| n4_T3 | ~$-7\times10^{-4}$ | More volatile, moderate | ~0.065 |
+| n3_T9 | ~$-1\times10^{-4}$ | Smooth, steady | ~0.063 |
+| n4_T9 | ~$-1\times10^{-4}$ | Smooth, steady | ~0.074 |
+
+**T dominates over n** in determining final policy quality: going from T=3 to T=9 improves terminal utility by an order of magnitude, while going from n=3 to n=4 at fixed T has modest impact.
+
+---
+
+### 4. Conclusion
+
+1. **Sigma strategy matters most during early training.** All three strategies (fixed, manual, learn) converge to comparable final utilities, but their training trajectories differ substantially. Fixed sigma is simplest but does not adapt; manual decay provides explicit schedule control at the cost of tuning; learn sigma is fully adaptive.
+2. **In this project, sigma is the exploration parameter.** Large sigma means broader action sampling and stronger exploration; small sigma means concentrated sampling around the mean action and stronger exploitation.
+3. **For fixed sigma, smaller values converge faster** because they reduce gradient variance and push the agent earlier into exploitation, but they also raise the risk of under-exploring the portfolio space.
+4. **For manual sigma, a large init value** (e.g. 0.10 = max_adjustment) creates a classic explore-then-exploit schedule: broad search first, stable refinement later. The cost is that the schedule is imposed externally rather than learned from the task.
+5. **Learn sigma is the recommended approach** because it gives the policy an adaptive mechanism for deciding when to keep exploring and when to exploit. This aligns best with REINFORCE in a constrained continuous-action problem.
+6. **Time horizon T is the dominant environmental factor**: longer T dramatically improves terminal CARA utility by enabling the agent to discover and repeatedly exploit a multi-step rebalancing plan under the 10% adjustment constraint.

@@ -24,3 +24,6 @@ Thumbs.db
 
 # Results (regenerable)
 results/
+
+# Local automation scripts
+scripts/run_ablation.ps1
